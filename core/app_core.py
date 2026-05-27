@@ -202,13 +202,17 @@ class MarzbanManager:
         )
         return await self.get_user(username)
 
-    async def extend_user_subscription(self, username: str, days: int) -> dict:
+    async def extend_user_subscription(self, username: str, days: int, reset_usage: bool = True) -> dict:
         user = await self.get_user(username)
         current_expire = user.get("expire") or int(datetime.now(timezone.utc).timestamp())
         now_ts = int(datetime.now(timezone.utc).timestamp())
         base_ts = max(current_expire, now_ts)
         new_expire = base_ts + (days * 86400)
-        return await self.modify_user(username, expire=new_expire, status=UserStatus.ACTIVE.value)
+        updated_user = await self.modify_user(username, expire=new_expire, status=UserStatus.ACTIVE.value)
+        if reset_usage:
+            await self.reset_usage(username)
+            return await self.get_user(username)
+        return updated_user
 
     async def set_user_status(self, username: str, status: UserStatus) -> dict:
         return await self.modify_user(username, status=status.value)

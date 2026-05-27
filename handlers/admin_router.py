@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from html import escape
 from datetime import datetime
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -69,6 +71,36 @@ def _broadcast_buttons_text(buttons: list[dict[str, str]]) -> str:
     if not buttons:
         return "Кнопки: не добавлены"
     return "Кнопки:\n" + "\n".join(f"{index}. {button['text']} -> {button['value']}" for index, button in enumerate(buttons, start=1))
+
+
+def _json_block(title: str, payload: object) -> str:
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    return f"<b>{escape(title)}</b>\n{escape(rendered)}"
+
+
+def _split_health_text(sections: list[str], limit: int = 3600) -> list[str]:
+    chunks: list[str] = []
+    current = ""
+
+    for section in sections:
+        parts = section.splitlines(keepends=True) or [section]
+        for part in parts:
+            while len(part) > limit:
+                if current:
+                    chunks.append(current.rstrip())
+                    current = ""
+                chunks.append(part[:limit].rstrip())
+                part = part[limit:]
+
+            if len(current) + len(part) > limit:
+                chunks.append(current.rstrip())
+                current = ""
+            current += part
+        current += "\n"
+
+    if current.strip():
+        chunks.append(current.rstrip())
+    return chunks
 
 
 async def _user_card(user_id: int) -> str:
@@ -262,27 +294,33 @@ async def admin_subscription_maintenance(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "admin:health")
 async def admin_health(call: CallbackQuery) -> None:
-    lines = ["<b>Health check</b>", ""]
-    lines.append(f"Mongo users: <code>{await db.count_all_users()}</code>")
-    try:
-        stats = await manager.get_system_stats()
-        lines.append("Marzban API: <code>ok</code>")
-        if stats:
-            lines.append(f"Marzban stats keys: <code>{', '.join(sorted(stats.keys())[:8])}</code>")
-    except Exception as exc:
-        lines.append(f"Marzban API: <code>failed: {exc}</code>")
+    sections = [
+        "<b>Health check</b>",
+        f"Mongo users: <code>{await db.count_all_users()}</code>",
+    ]
 
-    try:
-        nodes = await manager.get_nodes()
-        lines.append(f"Nodes: <code>{len(nodes)}</code>")
-        for node in nodes[:10]:
-            name = node.get("name") or node.get("address") or node.get("id") or "unknown"
-            status = node.get("status") or node.get("message") or "unknown"
-            lines.append(f"- <code>{name}</code>: {status}")
-    except Exception as exc:
-        lines.append(f"Nodes: <code>failed: {exc}</code>")
+    checks = [
+        ("Marzban /api/system", manager.get_system_stats),
+        ("Marzban /api/nodes", manager.get_nodes),
+        ("Marzban /api/inbounds", manager.get_inbounds),
+        ("Marzban /api/user_template", manager.get_templates),
+    ]
 
-    await call.message.edit_text("\n".join(lines), reply_markup=await kbs.admin_rescue_panel())
+    for title, loader in checks:
+        try:
+            sections.append(_json_block(title, await loader()))
+        except Exception as exc:
+            sections.append(f"<b>{escape(title)}</b>\n<code>failed: {escape(str(exc))}</code>")
+
+    chunks = _split_health_text(sections)
+    markup = await kbs.admin_rescue_panel()
+    if len(chunks) == 1:
+        await call.message.edit_text(chunks[0], reply_markup=markup)
+    else:
+        await call.message.edit_text(chunks[0])
+        for chunk in chunks[1:-1]:
+            await call.message.answer(chunk)
+        await call.message.answer(chunks[-1], reply_markup=markup)
     await call.answer()
 
 

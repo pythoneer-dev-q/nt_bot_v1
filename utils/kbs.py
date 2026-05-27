@@ -33,13 +33,14 @@ def build_inline_markup(buttons: Sequence[dict[str, str]]) -> InlineKeyboardMark
 
 async def main_menu() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="📊 Подписка", callback_data="user:sub", style="primary")
+    builder.button(text="🚀 Подключиться", callback_data="user:sub", style="primary")
     builder.button(text="🧩 FAQ", callback_data="user:faq")
     builder.button(text="👤 Профиль", callback_data="user:profile")
     builder.button(text="💡 Поддержка", callback_data="user:support", style="primary")
     builder.button(text="⚡️ Статистика", callback_data="user:stats")
+    builder.button(text="📊 Подписка", callback_data="user:sub")
     builder.button(text="❓ Почему я вижу рекламу", callback_data="user:donate")
-    builder.adjust(2, 2, 1, 1)
+    builder.adjust(1, 2, 2, 1, 1)
     await _append_ad_row(builder)
     return builder.as_markup()
 
@@ -201,6 +202,7 @@ async def admin_user_actions(user_id: int) -> InlineKeyboardMarkup:
 async def admin_rescue_panel() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="Health check", callback_data="admin:health"))
+    builder.row(InlineKeyboardButton(text="🚀 Подключиться", callback_data="user:sub", style="primary"))
     builder.row(InlineKeyboardButton(text="Set Subscription alert", callback_data="admin:set_subscription_alert", style="primary"))
     builder.row(InlineKeyboardButton(text="Clear Subscription alert", callback_data="admin:clear_subscription_alert", style="danger"))
     builder.row(InlineKeyboardButton(text="Create backup now", callback_data="admin:backup_now", style="success"))
