@@ -151,8 +151,6 @@ class MarzbanManager:
             "status": status.value,
             "group_ids": settings.default_groups
         }
-        print(type(payload["group_ids"]))
-        print(type(settings.default_groups))
         if inbounds:
             payload["inbounds"] = inbounds
         return await self._request("POST", "/api/user", json=payload)
