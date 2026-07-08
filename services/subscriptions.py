@@ -46,7 +46,7 @@ class SubscriptionMaintenanceService:
                 vpn_user = await manager.get_user_or_none(username)
                 if not vpn_user:
                     continue
-                expire_ts = vpn_user.get("expire") or 0
+                expire_ts = manager._normalize_expire(vpn_user.get("expire")) or 0
                 if expire_ts and expire_ts <= now_ts and vpn_user.get("status") != "expired":
                     await manager.apply_expired_subscription_config(username)
                     await db.mark_subscription_expired(user_id)

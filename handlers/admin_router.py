@@ -67,6 +67,15 @@ def _format_dt(value: datetime | None) -> str:
     return value.strftime("%d.%m.%Y %H:%M")
 
 
+def _format_api_dt(value: str | None) -> str:
+    if not value:
+        return "n/a"
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        return value
+
+
 def _broadcast_buttons_text(buttons: list[dict[str, str]]) -> str:
     if not buttons:
         return "Кнопки: не добавлены"
@@ -119,7 +128,8 @@ async def _user_card(user_id: int) -> str:
                 f"{manager.format_bytes(vpn_user.get('used_traffic', 0))} / "
                 f"{manager.format_bytes(traffic_limit) if traffic_limit else 'Безлимит'}"
             )
-            expire = datetime.fromtimestamp(vpn_user["expire"]).strftime("%d.%m.%Y %H:%M") if vpn_user.get("expire") else "Без срока"
+            expire_ts = manager._normalize_expire(vpn_user.get("expire"))
+            expire = datetime.fromtimestamp(expire_ts).strftime("%d.%m.%Y %H:%M") if expire_ts else "Без срока"
     except MarzbanError as exc:
         vpn_status = f"Ошибка Marzban: {exc.detail}"
 
@@ -154,6 +164,33 @@ async def _user_card(user_id: int) -> str:
     )
     if user.get("blocked_reason"):
         lines.append(f"Block reason: {user['blocked_reason']}")
+    return "\n".join(lines)
+
+
+async def _admin_user_devices_text(user_id: int, vpn_user: dict, devices: list[dict]) -> str:
+    lines = [
+        "<b>📱 Устройства пользователя</b>",
+        "",
+        f"Telegram ID: <code>{user_id}</code>",
+        f"VPN username: <code>{vpn_user.get('username', db.build_vpn_username(user_id))}</code>",
+        f"Лимит: <code>{vpn_user.get('hwid_limit') if vpn_user.get('hwid_limit') is not None else 'без лимита'}</code>",
+        f"Подключено: <code>{len(devices)}</code>",
+    ]
+    if not devices:
+        lines.append("\nУстройства пока не привязаны.")
+        return "\n".join(lines)
+
+    for index, device in enumerate(devices, start=1):
+        title = device.get("device_model") or device.get("device_os") or "Unknown device"
+        lines.extend(
+            [
+                "",
+                f"<b>{index}. {escape(str(title))}</b>",
+                f"OS: <code>{escape(str(device.get('device_os') or 'n/a'))}</code>",
+                f"HWID: <code>{escape(str(device.get('hwid') or 'n/a'))}</code>",
+                f"Last used: <code>{escape(_format_api_dt(device.get('last_used_at')))}</code>",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -390,7 +427,8 @@ async def admin_user_lookup_process(message: Message, state: FSMContext) -> None
 
 @router.callback_query(F.data.startswith("admin_user:"))
 async def admin_user_actions(call: CallbackQuery, state: FSMContext) -> None:
-    _, action, raw_user_id = call.data.split(":")
+    parts = call.data.split(":")
+    _, action, raw_user_id = parts[:3]
     user_id = int(raw_user_id)
     username = db.build_vpn_username(user_id)
 
@@ -402,13 +440,39 @@ async def admin_user_actions(call: CallbackQuery, state: FSMContext) -> None:
         return
 
     try:
-        if action in {"extend30", "extend90", "activate"}:
+        if action in {"extend30", "extend90", "activate", "active_next", "devices", "devices_reset", "device_del"}:
             await manager.ensure_subscription_user(
                 username=username,
                 data_limit_gb=settings.trial_limit_gb,
                 expire_days=settings.trial_days,
                 note=f"Telegram user {user_id}",
             )
+
+        if action == "devices":
+            vpn_user = await manager.get_user(username)
+            devices = await manager.get_user_hwids(vpn_user["id"])
+            await call.message.edit_text(await _admin_user_devices_text(user_id, vpn_user, devices), reply_markup=await kbs.admin_user_devices(user_id, devices))
+            await call.answer()
+            return
+        if action == "devices_reset":
+            vpn_user = await manager.get_user(username)
+            await manager.reset_user_hwids(vpn_user["id"])
+            devices = await manager.get_user_hwids(vpn_user["id"])
+            await call.message.edit_text(await _admin_user_devices_text(user_id, vpn_user, devices), reply_markup=await kbs.admin_user_devices(user_id, devices))
+            await call.answer("Устройства сброшены")
+            return
+        if action == "device_del":
+            vpn_user = await manager.get_user(username)
+            devices = await manager.get_user_hwids(vpn_user["id"])
+            index = int(parts[3])
+            if index < 0 or index >= len(devices):
+                await call.answer("Устройство уже не найдено", show_alert=True)
+                return
+            await manager.delete_user_hwid(vpn_user["id"], devices[index]["hwid"])
+            devices = await manager.get_user_hwids(vpn_user["id"])
+            await call.message.edit_text(await _admin_user_devices_text(user_id, vpn_user, devices), reply_markup=await kbs.admin_user_devices(user_id, devices))
+            await call.answer("Устройство удалено")
+            return
 
         if action == "extend30":
             await manager.extend_user_subscription(username, 30)
@@ -417,21 +481,29 @@ async def admin_user_actions(call: CallbackQuery, state: FSMContext) -> None:
             await manager.extend_user_subscription(username, 90)
             await db.update_user_status(user_id, "active")
         elif action == "activate":
-            await manager.set_user_status(username, UserStatus.ACTIVE)
+            await manager.set_user_disabled(username, False)
             await db.update_user_status(user_id, "active")
         elif action == "disable":
-            await manager.set_user_status(username, UserStatus.DISABLED)
+            await manager.set_user_disabled(username, True)
             await db.update_user_status(user_id, "disabled")
         elif action == "unblock":
             await db.clear_admin_block(user_id)
             existing = await manager.get_user_or_none(username)
             if existing:
-                await manager.set_user_status(username, UserStatus.ACTIVE)
+                await manager.set_user_disabled(username, False)
         elif action == "reset":
             await manager.reset_usage(username)
+        elif action == "revoke_sub":
+            await manager.revoke_subscription(username)
+        elif action == "active_next":
+            await manager.activate_next_plan(username)
+            await db.update_user_status(user_id, "active")
         elif action != "refresh":
             await call.answer("Неизвестное действие", show_alert=True)
             return
+    except (ValueError, KeyError):
+        await call.answer("Не удалось обработать действие", show_alert=True)
+        return
     except MarzbanError as exc:
         await call.answer(f"Ошибка Marzban: {exc.detail}", show_alert=True)
         return

@@ -102,6 +102,7 @@ class Settings:
     redis_dsn: str | None
     debug: bool
     log_level: str
+    default_groups: list[str]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -153,6 +154,7 @@ class Settings:
             redis_dsn=os.getenv("REDIS_DSN") or None,
             debug=_parse_bool(os.getenv("DEBUG"), False),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            default_groups=[int(x) for x in _parse_csv(os.getenv("DEFAULT_GROUPS", "1,4"))]
         )
 
 

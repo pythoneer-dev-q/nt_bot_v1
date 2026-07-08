@@ -74,15 +74,42 @@ async def registration_keyboard() -> InlineKeyboardMarkup:
 
 async def subscription_keyboard(url: str, show_free_renew: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    url = f'{settings.marzban_url}{url.replace('/', '', 1)}'
     if url:
         builder.row(InlineKeyboardButton(text="🚀 Открыть подписку", url=url, style="primary"))
     if show_free_renew:
         builder.row(InlineKeyboardButton(text="🔄 Продлить бесплатно", callback_data="user:renew_free", style="success"))
+    builder.row(InlineKeyboardButton(text="📱 Устройства", callback_data="user:devices"), InlineKeyboardButton(text="🕓 Действия", callback_data="user:sub_updates"))
+    builder.row(InlineKeyboardButton(text="🔐 Сброс ссылки", callback_data="user:revoke_sub", style="danger"))
+    builder.row(InlineKeyboardButton(text="🗯 Инструкция в боте", callback_data="user:instruction"), InlineKeyboardButton(text="↖️ Назад", callback_data="user:menu"))
     if settings.help_url:
         builder.row(InlineKeyboardButton(text="🛠 Инструкция", url=settings.help_url, style="success"))
-    builder.row(InlineKeyboardButton(text="🗯 Инструкция в боте", callback_data="user:instruction"))
-    builder.row(InlineKeyboardButton(text="↖️ Назад", callback_data="user:menu"))
     await _append_ad_row(builder)
+    return builder.as_markup()
+
+
+async def devices_keyboard(devices: Sequence[dict], back_to: str = "user:sub") -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for index, device in enumerate(devices[:8]):
+        label = device.get("device_model") or device.get("device_os") or device.get("hwid") or f"#{index + 1}"
+        builder.row(
+            InlineKeyboardButton(
+                text=f"🗑 {str(label)[:32]}",
+                callback_data=f"user:device_del:{index}",
+                style="danger",
+            )
+        )
+    if devices:
+        builder.row(InlineKeyboardButton(text="🧹 Сбросить все устройства", callback_data="user:devices_reset", style="danger"))
+    builder.row(InlineKeyboardButton(text="♻️ Обновить", callback_data="user:devices"))
+    builder.row(InlineKeyboardButton(text="↖️ К подписке", callback_data=back_to))
+    return builder.as_markup()
+
+
+async def revoke_subscription_confirm_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔐 Сбросить ссылку", callback_data="user:revoke_sub_confirm", style="danger"))
+    builder.row(InlineKeyboardButton(text="↖️ К подписке", callback_data="user:sub"))
     return builder.as_markup()
 
 
@@ -193,9 +220,30 @@ async def admin_user_actions(user_id: int) -> InlineKeyboardMarkup:
     builder.button(text="✅ Активировать", callback_data=f"admin_user:activate:{user_id}", style="primary")
     builder.button(text="⛔ Отключить", callback_data=f"admin_user:disable:{user_id}", style="danger")
     builder.button(text="🔄 Сбросить трафик", callback_data=f"admin_user:reset:{user_id}")
+    builder.button(text="🔐 Сброс ссылки", callback_data=f"admin_user:revoke_sub:{user_id}", style="danger")
+    builder.button(text="📱 Устройства", callback_data=f"admin_user:devices:{user_id}")
+    builder.button(text="⏭ След. план", callback_data=f"admin_user:active_next:{user_id}", style="primary")
     builder.button(text="♻️ Обновить", callback_data=f"admin_user:refresh:{user_id}")
     builder.button(text="⬅️ Назад", callback_data="admin:panel")
-    builder.adjust(2, 2, 2, 1)
+    builder.adjust(2, 2, 2, 2, 2, 1)
+    return builder.as_markup()
+
+
+async def admin_user_devices(user_id: int, devices: Sequence[dict]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for index, device in enumerate(devices[:8]):
+        label = device.get("device_model") or device.get("device_os") or device.get("hwid") or f"#{index + 1}"
+        builder.row(
+            InlineKeyboardButton(
+                text=f"🗑 {str(label)[:32]}",
+                callback_data=f"admin_user:device_del:{user_id}:{index}",
+                style="danger",
+            )
+        )
+    if devices:
+        builder.row(InlineKeyboardButton(text="🧹 Сбросить все", callback_data=f"admin_user:devices_reset:{user_id}", style="danger"))
+    builder.row(InlineKeyboardButton(text="♻️ Обновить", callback_data=f"admin_user:devices:{user_id}"))
+    builder.row(InlineKeyboardButton(text="⬅️ К карточке", callback_data=f"admin_user:refresh:{user_id}"))
     return builder.as_markup()
 
 

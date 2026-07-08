@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from html import escape
 from datetime import datetime, timedelta, timezone
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
@@ -41,6 +42,7 @@ def _registration_text() -> str:
 
 
 def _format_expire(timestamp: int | None) -> str:
+    timestamp = manager._normalize_expire(timestamp)
     if not timestamp:
         return "Без срока"
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
@@ -64,7 +66,7 @@ def _normalize_dt(dt: datetime | None) -> datetime | None:
 
 def _renewal_state(user_info: dict, local_user: dict | None) -> dict[str, object]:
     # Здесь собрана вся анти-фарм логика бесплатного продления.
-    expire_ts = user_info.get("expire") or 0
+    expire_ts = manager._normalize_expire(user_info.get("expire")) or 0
     if not expire_ts:
         return {"show_button": False, "can_renew": False, "reason": "У этой подписки нет срока окончания."}
 
@@ -220,6 +222,64 @@ def _subscription_text(user_info: dict, user_id: int, renewal: dict[str, object]
     ]
     if renewal.get("last_free_renew_at"):
         lines.append(f"🗓 <b>Последнее бесплатное продление:</b> <code>{_format_dt(renewal['last_free_renew_at'])}</code>")
+    return "\n".join(lines)
+
+
+def _format_device_dt(value: str | None) -> str:
+    if not value:
+        return "n/a"
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        return value
+
+
+def _devices_text(user_info: dict, devices: list[dict]) -> str:
+    limit = user_info.get("hwid_limit")
+    limit_text = str(limit) if limit is not None else "без лимита"
+    lines = [
+        "<b>📱 Устройства</b>",
+        "",
+        f"Лимит: <code>{limit_text}</code>",
+        f"Подключено: <code>{len(devices)}</code>",
+    ]
+    if not devices:
+        lines.append("\nУстройства пока не привязаны к подписке.")
+        return "\n".join(lines)
+
+    for index, device in enumerate(devices, start=1):
+        title = device.get("device_model") or device.get("device_os") or "Неизвестное устройство"
+        lines.extend(
+            [
+                "",
+                f"<b>{index}. {escape(str(title))}</b>",
+                f"OS: <code>{escape(str(device.get('device_os') or 'n/a'))}</code>",
+                f"HWID: <code>{escape(str(device.get('hwid') or 'n/a'))}</code>",
+                f"Последнее использование: <code>{escape(_format_device_dt(device.get('last_used_at')))}</code>",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _sub_updates_text(updates: list[dict]) -> str:
+    lines = ["<b>🕓 Обновления подписки</b>"]
+    if not updates:
+        lines.append("\nИстория обновлений пока пустая.")
+        return "\n".join(lines)
+
+    for index, item in enumerate(updates, start=1):
+        user_agent = str(item.get("user_agent") or "unknown")
+        ip = item.get("ip") or "n/a"
+        hwid = item.get("hwid") or "n/a"
+        lines.extend(
+            [
+                "",
+                f"<b>{index}. {_format_device_dt(item.get('created_at'))}</b>",
+                f"IP: <code>{escape(str(ip))}</code>",
+                f"HWID: <code>{escape(str(hwid))}</code>",
+                f"Client: <code>{escape(user_agent[:120])}</code>",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -393,6 +453,133 @@ async def renew_free_subscription(call: CallbackQuery) -> None:
         ),
     )
     await call.answer("Подписка продлена")
+
+
+@router.callback_query(F.data == "user:devices")
+async def devices_page(call: CallbackQuery) -> None:
+    if not await _require_sponsors(call):
+        return
+
+    username = db.build_vpn_username(call.from_user.id)
+    try:
+        user_info = await manager.ensure_subscription_user(
+            username=username,
+            data_limit_gb=settings.trial_limit_gb,
+            expire_days=settings.trial_days,
+            note=f"Telegram user {call.from_user.id}",
+        )
+        devices = await manager.get_user_hwids(user_info["id"])
+    except MarzbanError as exc:
+        await call.message.edit_text(f"Не удалось получить устройства: {exc.detail}", reply_markup=await kbs.subscription_keyboard(""))
+        await call.answer()
+        return
+
+    await call.message.edit_text(_devices_text(user_info, devices), reply_markup=await kbs.devices_keyboard(devices))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("user:device_del:"))
+async def delete_device(call: CallbackQuery) -> None:
+    if not await _require_sponsors(call):
+        return
+
+    _, _, raw_index = call.data.split(":")
+    username = db.build_vpn_username(call.from_user.id)
+    try:
+        user_info = await manager.get_user(username)
+        devices = await manager.get_user_hwids(user_info["id"])
+        index = int(raw_index)
+        if index < 0 or index >= len(devices):
+            await call.answer("Устройство уже не найдено", show_alert=True)
+            return
+        await manager.delete_user_hwid(user_info["id"], devices[index]["hwid"])
+        devices = await manager.get_user_hwids(user_info["id"])
+    except (ValueError, KeyError):
+        await call.answer("Не удалось определить устройство", show_alert=True)
+        return
+    except MarzbanError as exc:
+        await call.answer(f"Ошибка: {exc.detail}", show_alert=True)
+        return
+
+    await call.message.edit_text(_devices_text(user_info, devices), reply_markup=await kbs.devices_keyboard(devices))
+    await call.answer("Устройство удалено")
+
+
+@router.callback_query(F.data == "user:devices_reset")
+async def reset_devices(call: CallbackQuery) -> None:
+    if not await _require_sponsors(call):
+        return
+
+    username = db.build_vpn_username(call.from_user.id)
+    try:
+        user_info = await manager.get_user(username)
+        await manager.reset_user_hwids(user_info["id"])
+        devices = await manager.get_user_hwids(user_info["id"])
+    except MarzbanError as exc:
+        await call.answer(f"Ошибка: {exc.detail}", show_alert=True)
+        return
+
+    await call.message.edit_text(_devices_text(user_info, devices), reply_markup=await kbs.devices_keyboard(devices))
+    await call.answer("Устройства сброшены")
+
+
+@router.callback_query(F.data == "user:sub_updates")
+async def subscription_updates_page(call: CallbackQuery) -> None:
+    if not await _require_sponsors(call):
+        return
+
+    username = db.build_vpn_username(call.from_user.id)
+    try:
+        await manager.ensure_subscription_user(
+            username=username,
+            data_limit_gb=settings.trial_limit_gb,
+            expire_days=settings.trial_days,
+            note=f"Telegram user {call.from_user.id}",
+        )
+        updates = await manager.get_user_subscription_updates(username)
+    except MarzbanError as exc:
+        await call.message.edit_text(f"Не удалось получить историю: {exc.detail}", reply_markup=await kbs.profile_keyboard())
+        await call.answer()
+        return
+
+    await call.message.edit_text(_sub_updates_text(updates), reply_markup=await kbs.profile_keyboard())
+    await call.answer()
+
+
+@router.callback_query(F.data == "user:revoke_sub")
+async def revoke_subscription_confirm(call: CallbackQuery) -> None:
+    if not await _require_sponsors(call):
+        return
+
+    await call.message.edit_text(
+        "<b>🔐 Сбросить ссылку подписки?</b>\n\n"
+        "Старая ссылка перестанет работать. После сброса откройте подписку заново и импортируйте новый URL в приложение.",
+        reply_markup=await kbs.revoke_subscription_confirm_keyboard(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "user:revoke_sub_confirm")
+async def revoke_subscription(call: CallbackQuery) -> None:
+    if not await _require_sponsors(call):
+        return
+
+    username = db.build_vpn_username(call.from_user.id)
+    try:
+        await manager.revoke_subscription(username)
+        _, user_info, renewal = await _load_subscription_context(call.from_user.id)
+    except MarzbanError as exc:
+        await call.answer(f"Ошибка: {exc.detail}", show_alert=True)
+        return
+
+    await call.message.edit_text(
+        _subscription_text(user_info, call.from_user.id, renewal),
+        reply_markup=await kbs.subscription_keyboard(
+            user_info.get("subscription_url", ""),
+            show_free_renew=bool(renewal["show_button"]),
+        ),
+    )
+    await call.answer("Ссылка обновлена")
 
 
 @router.callback_query(F.data == "user:faq")
