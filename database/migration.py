@@ -20,6 +20,8 @@ MIGRATION_COLLECTIONS = (
     "ads",
     "support_tickets",
     "alerts",
+    "app_config",
+    "payments",
 )
 
 

@@ -11,6 +11,7 @@ from handlers.admin_router import router as admin_router
 from handlers.fallback_router import router as fallback_router
 from handlers.user_router import router as user_router
 from services.backups import backup_service
+from services.payments import payment_monitor_service, payment_service
 from services.subscriptions import subscription_maintenance_service
 
 
@@ -29,30 +30,37 @@ def build_storage():
     return RedisStorage(redis=redis)
 
 
-async def on_startup() -> None:
+async def on_startup(bot: Bot) -> None:
     await db.connect()
     await db.ensure_indexes()
     backup_service.start()
-    subscription_maintenance_service.start()
+    subscription_maintenance_service.start(bot)
+    payment_monitor_service.start(bot)
 
 
 async def on_shutdown() -> None:
+    await payment_monitor_service.stop()
     await subscription_maintenance_service.stop()
     await backup_service.stop()
+    await payment_service.close()
     await manager.close()
     await db.close()
 
 
 async def main() -> None:
-    log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    )
-    if not settings.debug:
-        logging.getLogger("aiogram").setLevel(logging.WARNING)
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("aiohttp").setLevel(logging.WARNING)
+    if settings.disable_logs:
+        logging.basicConfig(level=logging.CRITICAL)
+        logging.getLogger().setLevel(logging.CRITICAL)
+    else:
+        log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        )
+        if not settings.debug:
+            logging.getLogger("aiogram").setLevel(logging.WARNING)
+            logging.getLogger("httpx").setLevel(logging.WARNING)
+            logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
     bot = Bot(
         token=settings.bot_token,
@@ -63,7 +71,7 @@ async def main() -> None:
     dp.include_router(admin_router)
     dp.include_router(fallback_router)
 
-    await on_startup()
+    await on_startup(bot)
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

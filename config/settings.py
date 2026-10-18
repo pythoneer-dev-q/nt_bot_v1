@@ -9,7 +9,19 @@ load_dotenv()
 def _parse_int(value: str | None, default: int) -> int:
     if value is None or value == "":
         return default
-    return int(value)
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _parse_float(value: str | None, default: float) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
 
 
 def _parse_bool(value: str | None, default: bool = False) -> bool:
@@ -53,7 +65,7 @@ def normalize_channel_ref(raw_value: str) -> str:
 
 
 def _parse_int_csv(value: str | None) -> set[int]:
-    return {int(item) for item in _parse_csv(value)}
+    return {int(item) for item in _parse_csv(value) if item.isdigit() or (item.startswith("-") and item[1:].isdigit())}
 
 
 def _parse_json_dict(value: str | None) -> dict:
@@ -79,11 +91,24 @@ class Settings:
     user_agreement_url: str | None
     privacy_policy_url: str | None
     menu_image_url: str | None
+    menu_description: str
     support_url: str | None
     support_username: str | None
-    donate_url: str | None
-    donate_card: str | None
     project_name: str
+    premium_base_price_rub: float
+    default_discount_percent: float
+    free_device_limit: int
+    premium_device_limit: int
+    marzban_token: str | None
+    pasarguard_free_group_name: str
+    pasarguard_premium_group_name: str
+    pasarguard_renew_group_name: str
+    pasarguard_blocked_group_name: str
+    overdraft_price_rub: float
+    rolly_api_url: str
+    rolly_api_key: str | None
+    rolly_terminal_id: str | None
+    rolly_signing_secret: str | None
     trial_days: int
     trial_limit_gb: int
     free_renew_window_hours: int
@@ -102,6 +127,7 @@ class Settings:
     redis_dsn: str | None
     debug: bool
     log_level: str
+    disable_logs: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -110,10 +136,8 @@ class Settings:
             raise ValueError("BOT_TOKEN is not set in .env")
 
         marzban_url = os.getenv("M_URL", "http://127.0.0.1:8000")
-        marzban_username = os.getenv("M_USERNAME")
-        marzban_password = os.getenv("M_PASSWORD")
-        if not marzban_username or not marzban_password:
-            raise ValueError("M_USERNAME and M_PASSWORD are not set in .env")
+        marzban_username = os.getenv("M_USERNAME", "")
+        marzban_password = os.getenv("M_PASSWORD", "")
 
         return cls(
             bot_token=bot_token,
@@ -127,13 +151,29 @@ class Settings:
             user_agreement_url=os.getenv("USER_AGREEMENT_URL") or None,
             privacy_policy_url=os.getenv("PRIVACY_POLICY_URL") or None,
             menu_image_url=os.getenv("MENU_IMAGE_URL") or None,
+            menu_description=os.getenv(
+                "MENU_DESCRIPTION",
+                "Быстрый, безопасный и приватный доступ в интернет без ограничений.",
+            ),
             support_url=os.getenv("SUPPORT_URL") or None,
             support_username=os.getenv("SUPPORT_USERNAME") or None,
-            donate_url=os.getenv("DONATE_URL") or None,
-            donate_card=os.getenv("DONATE_CARD") or None,
-            project_name=os.getenv("PROJECT_NAME", "Not A VPN"),
-            trial_days=_parse_int(os.getenv("TRIAL_DAYS"), 30),
-            trial_limit_gb=_parse_int(os.getenv("TRIAL_LIMIT_GB"), 50),
+            project_name=os.getenv("PROJECT_NAME", "VPN"),
+            premium_base_price_rub=_parse_float(os.getenv("PREMIUM_BASE_PRICE_RUB"), 199.0),
+            default_discount_percent=_parse_float(os.getenv("DEFAULT_DISCOUNT_PERCENT"), 10.0),
+            free_device_limit=_parse_int(os.getenv("FREE_DEVICE_LIMIT") or os.getenv("DEFAULT_FREE_DEVICE_LIMIT"), 1),
+            premium_device_limit=_parse_int(os.getenv("PREMIUM_DEVICE_LIMIT") or os.getenv("DEFAULT_PREMIUM_DEVICE_LIMIT"), 3),
+            marzban_token=os.getenv("M_TOKEN") or None,
+            pasarguard_free_group_name=os.getenv("PASARGUARD_FREE_GROUP_NAME", "aska_free"),
+            pasarguard_premium_group_name=os.getenv("PASARGUARD_PREMIUM_GROUP_NAME", "aska_premium"),
+            pasarguard_renew_group_name=os.getenv("PASARGUARD_RENEW_GROUP_NAME", "aska_renew"),
+            pasarguard_blocked_group_name=os.getenv("PASARGUARD_BLOCKED_GROUP_NAME", "aska_blocked"),
+            overdraft_price_rub=_parse_float(os.getenv("OVERDRAFT_PRICE_RUB"), 29.0),
+            rolly_api_url=os.getenv("ROLLY_API_URL", "https://api.rollypay.io").rstrip("/"),
+            rolly_api_key=os.getenv("ROLLY_API_KEY") or None,
+            rolly_terminal_id=os.getenv("ROLLY_TERMINAL_ID") or None,
+            rolly_signing_secret=os.getenv("ROLLY_SIGNING_SECRET") or None,
+            trial_days=_parse_int(os.getenv("TRIAL_DAYS"), 14),
+            trial_limit_gb=_parse_int(os.getenv("TRIAL_LIMIT_GB"), 100),
             free_renew_window_hours=_parse_int(os.getenv("FREE_RENEW_WINDOW_HOURS"), 24),
             free_renew_cooldown_days=_parse_int(os.getenv("FREE_RENEW_COOLDOWN_DAYS"), 30),
             backup_enabled=_parse_bool(os.getenv("BACKUP_ENABLED"), True),
@@ -153,6 +193,7 @@ class Settings:
             redis_dsn=os.getenv("REDIS_DSN") or None,
             debug=_parse_bool(os.getenv("DEBUG"), False),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            disable_logs=_parse_bool(os.getenv("DISABLE_LOGS"), False),
         )
 
 

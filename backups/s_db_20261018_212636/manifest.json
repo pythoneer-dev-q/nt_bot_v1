@@ -1,0 +1,18 @@
+{
+  "database": "s_db",
+  "created_at": {
+    "$date": "2026-10-18T21:26:36.026Z"
+  },
+  "collections": [
+    "users",
+    "admins",
+    "broadcasts",
+    "channels",
+    "ads",
+    "support_tickets",
+    "alerts",
+    "app_config",
+    "payments"
+  ],
+  "format": "mongo-json-util-gzip-v1"
+}

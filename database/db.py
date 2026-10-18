@@ -28,6 +28,8 @@ class MongoStorage:
         self.support_tickets: AsyncIOMotorCollection | None = None
         self.backup_runs: AsyncIOMotorCollection | None = None
         self.alerts: AsyncIOMotorCollection | None = None
+        self.app_config: AsyncIOMotorCollection | None = None
+        self.payments: AsyncIOMotorCollection | None = None
 
     async def connect(self) -> None:
         if self.client is not None:
@@ -43,6 +45,8 @@ class MongoStorage:
         self.support_tickets = self.database["support_tickets"]
         self.backup_runs = self.database["backup_runs"]
         self.alerts = self.database["alerts"]
+        self.app_config = self.database["app_config"]
+        self.payments = self.database["payments"]
 
     async def close(self) -> None:
         if self.client is None:
@@ -59,6 +63,8 @@ class MongoStorage:
         self.support_tickets = None
         self.backup_runs = None
         self.alerts = None
+        self.app_config = None
+        self.payments = None
 
     async def ensure_indexes(self) -> None:
         assert self.users is not None
@@ -69,6 +75,8 @@ class MongoStorage:
         assert self.support_tickets is not None
         assert self.backup_runs is not None
         assert self.alerts is not None
+        assert self.app_config is not None
+        assert self.payments is not None
 
         await self.users.create_indexes(
             [
@@ -76,6 +84,7 @@ class MongoStorage:
                 IndexModel([("username", ASCENDING)], unique=False),
                 IndexModel([("vpn_username", ASCENDING)], unique=True),
                 IndexModel([("status", ASCENDING)], unique=False),
+                IndexModel([("tariff", ASCENDING)], unique=False),
                 IndexModel([("is_registered", ASCENDING)], unique=False),
                 IndexModel([("blocked_at", ASCENDING)], unique=False),
             ]
@@ -98,6 +107,16 @@ class MongoStorage:
                 IndexModel([("status", ASCENDING)], unique=False),
             ]
         )
+        await self.app_config.create_indexes([IndexModel([("key", ASCENDING)], unique=True)])
+        await self.payments.create_indexes(
+            [
+                IndexModel([("order_id", ASCENDING)], unique=True),
+                IndexModel([("payment_id", ASCENDING)], unique=False),
+                IndexModel([("user_id", ASCENDING)], unique=False),
+                IndexModel([("status", ASCENDING)], unique=False),
+                IndexModel([("created_at", ASCENDING)], unique=False),
+            ]
+        )
 
         if settings.admin_ids:
             for admin_id in settings.admin_ids:
@@ -116,11 +135,188 @@ class MongoStorage:
         for channel_ref in settings.required_channels:
             await self.add_channel(channel_ref, source="env")
 
+    # ---------------- App Config & Pricing ----------------
+    async def get_app_config(self) -> dict:
+        assert self.app_config is not None
+        doc = await self.app_config.find_one({"key": "main"})
+        defaults = {
+            "key": "main",
+            "premium_base_price_rub": settings.premium_base_price_rub,
+            "default_discount_percent": settings.default_discount_percent,
+            "free_device_limit": settings.free_device_limit,
+            "premium_device_limit": settings.premium_device_limit,
+            "project_name": settings.project_name,
+            "menu_description": settings.menu_description,
+        }
+        if not doc:
+            return defaults
+
+        return {
+            "key": "main",
+            "premium_base_price_rub": float(doc.get("premium_base_price_rub", settings.premium_base_price_rub)),
+            "default_discount_percent": float(doc.get("default_discount_percent", settings.default_discount_percent)),
+            "free_device_limit": int(doc.get("free_device_limit", settings.free_device_limit)),
+            "premium_device_limit": int(doc.get("premium_device_limit", settings.premium_device_limit)),
+            "project_name": str(doc.get("project_name", settings.project_name)),
+            "menu_description": str(doc.get("menu_description", settings.menu_description)),
+        }
+
+    async def update_app_config(self, **kwargs) -> dict:
+        assert self.app_config is not None
+        now = datetime.now(timezone.utc)
+        payload = {**kwargs, "updated_at": now}
+        await self.app_config.update_one(
+            {"key": "main"},
+            {"$set": payload, "$setOnInsert": {"key": "main", "created_at": now}},
+            upsert=True,
+        )
+        return await self.get_app_config()
+
+    # ---------------- Payments ----------------
+    async def create_payment_order(
+        self,
+        user_id: int,
+        order_id: str,
+        amount: float,
+        days: int = 0,
+        months: int = 0,
+        pay_url: str = "",
+        payment_id: str = "",
+        status: str = "created",
+        order_type: str = "tariff",
+    ) -> dict:
+        assert self.payments is not None
+        now = datetime.now(timezone.utc)
+        doc = {
+            "_id": uuid4().hex,
+            "order_id": order_id,
+            "payment_id": payment_id,
+            "user_id": user_id,
+            "amount": round(amount, 2),
+            "currency": "RUB",
+            "days": days,
+            "months": months,
+            "order_type": order_type,
+            "pay_url": pay_url,
+            "status": status,
+            "created_at": now,
+            "paid_at": None,
+            "updated_at": now,
+        }
+        await self.payments.insert_one(doc)
+        return doc
+
+    async def get_payment_order(self, order_id: str) -> dict | None:
+        assert self.payments is not None
+        return await self.payments.find_one({"order_id": order_id})
+
+    async def get_payment_by_payment_id(self, payment_id: str) -> dict | None:
+        assert self.payments is not None
+        return await self.payments.find_one({"payment_id": payment_id})
+
+    async def update_payment_status(self, order_id: str, status: str, payment_id: str | None = None) -> None:
+        assert self.payments is not None
+        update_fields: dict = {"status": status, "updated_at": datetime.now(timezone.utc)}
+        if payment_id:
+            update_fields["payment_id"] = payment_id
+        if status == "paid":
+            update_fields["paid_at"] = datetime.now(timezone.utc)
+        await self.payments.update_one({"order_id": order_id}, {"$set": update_fields})
+
+    async def mark_payment_paid(self, order_id: str, payment_id: str | None = None) -> dict | None:
+        assert self.payments is not None
+        now = datetime.now(timezone.utc)
+        update_fields: dict = {"status": "paid", "paid_at": now, "updated_at": now}
+        if payment_id:
+            update_fields["payment_id"] = payment_id
+        return await self.payments.find_one_and_update(
+            {"order_id": order_id},
+            {"$set": update_fields},
+            return_document=ReturnDocument.AFTER,
+        )
+
+    async def get_pending_payments(self, older_than_minutes: int = 120) -> list[dict]:
+        assert self.payments is not None
+        threshold = datetime.now(timezone.utc) - timedelta(minutes=older_than_minutes)
+        cursor = self.payments.find(
+            {"status": "created", "created_at": {"$gte": threshold}},
+            limit=50,
+        )
+        return await cursor.to_list(length=50)
+
+    async def get_user_payments(
+        self,
+        user_id: int,
+        limit: int = 10,
+        offset: int = 0,
+        order_types: list[str] | None = None,
+    ) -> list[dict]:
+        assert self.payments is not None
+        query: dict[str, Any] = {"user_id": user_id}
+        if order_types:
+            query["order_type"] = {"$in": order_types}
+        cursor = self.payments.find(query).sort("created_at", -1).skip(offset).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    async def count_user_payments(
+        self,
+        user_id: int,
+        order_types: list[str] | None = None,
+    ) -> int:
+        assert self.payments is not None
+        query: dict[str, Any] = {"user_id": user_id}
+        if order_types:
+            query["order_type"] = {"$in": order_types}
+        return await self.payments.count_documents(query)
+
+    async def request_payment_refund(self, order_id: str, user_id: int, reason: str = "") -> dict | None:
+        assert self.payments is not None
+        now = datetime.now(timezone.utc)
+        return await self.payments.find_one_and_update(
+            {"order_id": order_id, "user_id": user_id, "status": "paid"},
+            {
+                "$set": {
+                    "status": "refund_requested",
+                    "refund_reason": reason,
+                    "refund_requested_at": now,
+                    "updated_at": now,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+
+    async def resolve_payment_refund(self, order_id: str, approve: bool, admin_id: int) -> dict | None:
+        assert self.payments is not None
+        now = datetime.now(timezone.utc)
+        new_status = "refunded" if approve else "refund_declined"
+        update_fields: dict[str, Any] = {
+            "status": new_status,
+            "refund_resolved_at": now,
+            "refund_resolved_by": admin_id,
+            "updated_at": now,
+        }
+        return await self.payments.find_one_and_update(
+            {"order_id": order_id, "status": "refund_requested"},
+            {"$set": update_fields},
+            return_document=ReturnDocument.AFTER,
+        )
+
+    async def get_pending_refund_requests(self, limit: int = 20) -> list[dict]:
+        assert self.payments is not None
+        cursor = self.payments.find({"status": "refund_requested"}).sort("refund_requested_at", -1).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    async def count_pending_refund_requests(self) -> int:
+        assert self.payments is not None
+        return await self.payments.count_documents({"status": "refund_requested"})
+
+    # ---------------- Users ----------------
     async def ensure_user(self, user_id: int, username: str | None, full_name: str | None) -> dict:
         assert self.users is not None
         now = datetime.now(timezone.utc)
         existing = await self.users.find_one({"user_id": user_id})
         next_status = existing.get("status", "active") if existing else "active"
+        next_tariff = existing.get("tariff", "free") if existing else "free"
         return await self.users.find_one_and_update(
             {"user_id": user_id},
             {
@@ -129,6 +325,7 @@ class MongoStorage:
                     "full_name": full_name,
                     "vpn_username": self.build_vpn_username(user_id),
                     "status": next_status,
+                    "tariff": next_tariff,
                     "is_bot_blocked": False,
                     "last_seen_at": now,
                     "updated_at": now,
@@ -140,14 +337,218 @@ class MongoStorage:
                     "is_subscribed_to_sponsors": False,
                     "accepted_rules_at": None,
                     "last_free_renew_at": None,
+                    "premium_expires_at": None,
                     "blocked_at": None,
                     "blocked_by": None,
                     "blocked_reason": None,
+                    "balance": 0.0,
+                    "auto_renew": True,
+                    "overdraft_used": False,
+                    "custom_device_limit": None,
+                    "device_limit_warned_count": None,
+                    "device_limit_warned_at": None,
                     "created_at": now,
                 },
             },
             upsert=True,
             return_document=ReturnDocument.AFTER,
+        )
+
+    async def set_user_tariff(self, user_id: int, tariff: str, expire_at: datetime | None = None) -> None:
+        assert self.users is not None
+        now = datetime.now(timezone.utc)
+        await self.users.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "tariff": tariff,
+                    "premium_expires_at": expire_at,
+                    "updated_at": now,
+                }
+            },
+        )
+
+    async def get_user_tariff(self, user_id: int) -> str:
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            return "free"
+        tariff = user.get("tariff", "free")
+        if tariff == "premium":
+            expires_at = user.get("premium_expires_at")
+            if expires_at:
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at <= datetime.now(timezone.utc):
+                    await self.set_user_tariff(user_id, "free", None)
+                    return "free"
+        return tariff
+
+    # ---------------- Device Limits ----------------
+    async def get_user_device_limit(self, user_id: int) -> int:
+        """Возвращает действующий лимит устройств для пользователя (кастомный или по тарифу)."""
+        user = await self.get_user_by_id(user_id)
+        if user and user.get("custom_device_limit") is not None:
+            return int(user["custom_device_limit"])
+
+        cfg = await self.get_app_config()
+        tariff = await self.get_user_tariff(user_id)
+        if tariff == "premium":
+            return int(cfg.get("premium_device_limit", settings.premium_device_limit))
+        return int(cfg.get("free_device_limit", settings.free_device_limit))
+
+    async def set_user_custom_device_limit(self, user_id: int, limit: int | None) -> None:
+        """Устанавливает индивидуальный лимит устройств пользователю или сбрасывает к тарифному."""
+        assert self.users is not None
+        now = datetime.now(timezone.utc)
+        if limit is None:
+            await self.users.update_one(
+                {"user_id": user_id},
+                {"$unset": {"custom_device_limit": ""}, "$set": {"updated_at": now}},
+            )
+        else:
+            await self.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"custom_device_limit": int(limit), "updated_at": now}},
+            )
+
+    async def should_warn_device_limit(self, user_id: int, current_count: int, limit: int) -> bool:
+        """Проверяет, нужно ли уведомить пользователя о достижении лимита устройств."""
+        if current_count < limit:
+            return False
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            return False
+        last_warned_count = user.get("device_limit_warned_count")
+        last_warned_at = user.get("device_limit_warned_at")
+        now = datetime.now(timezone.utc)
+        if last_warned_count != current_count:
+            return True
+        if not last_warned_at:
+            return True
+        if last_warned_at.tzinfo is None:
+            last_warned_at = last_warned_at.replace(tzinfo=timezone.utc)
+        return (now - last_warned_at) > timedelta(hours=24)
+
+    async def mark_device_limit_warned(self, user_id: int, current_count: int) -> None:
+        assert self.users is not None
+        now = datetime.now(timezone.utc)
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"device_limit_warned_count": current_count, "device_limit_warned_at": now}},
+        )
+
+    # ---------------- Balance & Overdraft ----------------
+    async def get_user_balance(self, user_id: int) -> float:
+        assert self.users is not None
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            return 0.0
+        return round(float(user.get("balance", 0.0)), 2)
+
+    async def change_user_balance(self, user_id: int, delta: float) -> float:
+        assert self.users is not None
+        now = datetime.now(timezone.utc)
+        updated = await self.users.find_one_and_update(
+            {"user_id": user_id},
+            {
+                "$inc": {"balance": round(delta, 2)},
+                "$set": {"updated_at": now},
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if not updated:
+            return 0.0
+        return round(float(updated.get("balance", 0.0)), 2)
+
+    async def set_user_balance(self, user_id: int, amount: float) -> None:
+        assert self.users is not None
+        now = datetime.now(timezone.utc)
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"balance": round(amount, 2), "updated_at": now}},
+        )
+
+    async def get_user_auto_renew(self, user_id: int) -> bool:
+        assert self.users is not None
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            return True
+        return bool(user.get("auto_renew", True))
+
+    async def set_user_auto_renew(self, user_id: int, enabled: bool) -> None:
+        assert self.users is not None
+        now = datetime.now(timezone.utc)
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"auto_renew": enabled, "updated_at": now}},
+        )
+
+    async def can_use_overdraft(self, user_id: int) -> tuple[bool, str]:
+        """
+        Перерасход (доверенный платеж): дает 3 дня премиума по спеццене,
+        которая уведет баланс в минус.
+        Условия: строго один раз и ТОЛЬКО при положительном балансе (balance > 0).
+        """
+        assert self.users is not None
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            return False, "Пользователь не найден"
+
+        if user.get("overdraft_used"):
+            return False, "Услуга «Перерасход» уже была использована ранее (доступна только 1 раз)."
+
+        balance = round(float(user.get("balance", 0.0)), 2)
+        if balance <= 0:
+            return False, f"Перерасход доступен только при положительном балансе (ваш текущий баланс: {balance:.2f} ₽)."
+
+        return True, "Перерасход доступен"
+
+    async def apply_overdraft(self, user_id: int, price: float, days: int = 3) -> dict | None:
+        """Активирует услугу перерасхода, списывает спеццену (уводя в минус) и продлевает премиум на 3 дня."""
+        assert self.users is not None
+        now = datetime.now(timezone.utc)
+        user = await self.get_user_by_id(user_id)
+        current_expire = user.get("premium_expires_at") if user else None
+        if current_expire:
+            if current_expire.tzinfo is None:
+                current_expire = current_expire.replace(tzinfo=timezone.utc)
+            base_dt = max(current_expire, now)
+        else:
+            base_dt = now
+
+        new_expire = base_dt + timedelta(days=days)
+        updated = await self.users.find_one_and_update(
+            {"user_id": user_id},
+            {
+                "$inc": {"balance": -round(price, 2)},
+                "$set": {
+                    "overdraft_used": True,
+                    "tariff": "premium",
+                    "premium_expires_at": new_expire,
+                    "updated_at": now,
+                },
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        return updated
+
+    async def delete_user(self, user_id: int) -> bool:
+        """Полностью удаляет пользователя из базы данных."""
+        assert self.users is not None
+        result = await self.users.delete_one({"user_id": user_id})
+        return result.deleted_count > 0
+
+    async def recreate_user(self, user_id: int, username: str | None = None, full_name: str | None = None) -> dict:
+        """Удаляет существующего пользователя и пересоздает его заново."""
+        await self.delete_user(user_id)
+        return await self.ensure_user(user_id, username, full_name)
+
+    async def set_user_warned_expire(self, user_id: int, expire_ts: int) -> None:
+        """Сохраняет timestamp истечения, о котором пользователя уже предупредили."""
+        assert self.users is not None
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"warned_expire_ts": expire_ts}},
         )
 
     async def mark_rules_accepted(self, user_id: int) -> None:
@@ -299,9 +700,17 @@ class MongoStorage:
             query["status"] = {"$nin": ["blocked", "admin_blocked"]}
         return await self.users.count_documents(query)
 
+    async def count_premium_users(self) -> int:
+        assert self.users is not None
+        return await self.users.count_documents({"tariff": "premium"})
+
+    async def count_free_users(self) -> int:
+        assert self.users is not None
+        return await self.users.count_documents({"tariff": {"$ne": "premium"}})
+
     async def iter_registered_users(self) -> AsyncIterator[dict]:
         assert self.users is not None
-        cursor = self.users.find({"is_registered": True}, projection={"_id": 0, "user_id": 1})
+        cursor = self.users.find({"is_registered": True}, projection={"_id": 0, "user_id": 1, "tariff": 1})
         async for user in cursor:
             yield user
 
@@ -403,7 +812,6 @@ class MongoStorage:
         return await self.admins.count_documents({"user_id": {"$exists": True}})
 
     async def list_support_recipient_ids(self) -> list[int]:
-        # Поддержку обрабатывают админы, чтобы не плодить параллельные роли в этой версии проекта.
         admin_ids = {item["user_id"] for item in await self.list_admins()}
         admin_ids.update(settings.admin_ids)
         return sorted(admin_ids)
