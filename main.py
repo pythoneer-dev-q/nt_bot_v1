@@ -6,6 +6,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from config import settings
 from core.app_core import manager
+from core.middlewares import MaintenanceMiddleware
 from database.db import db
 from handlers.admin_router import router as admin_router
 from handlers.fallback_router import router as fallback_router
@@ -67,8 +68,9 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher(storage=build_storage())
-    dp.include_router(user_router)
+    dp.update.outer_middleware(MaintenanceMiddleware())
     dp.include_router(admin_router)
+    dp.include_router(user_router)
     dp.include_router(fallback_router)
 
     await on_startup(bot)

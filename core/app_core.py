@@ -257,6 +257,31 @@ class PasarGuardManager:
     async def delete_user(self, username: str) -> dict:
         return await self._request("DELETE", f"/api/user/{username}")
 
+    async def delete_all_panel_users(self) -> int:
+        """Удаляет всех пользователей из панели PasarGuard/Marzban."""
+        deleted = 0
+        while True:
+            try:
+                users = await self.get_all_users(offset=0, limit=100)
+                if not users:
+                    break
+                batch_deleted = 0
+                for u in users:
+                    uname = u.get("username")
+                    if uname:
+                        try:
+                            await self.delete_user(uname)
+                            deleted += 1
+                            batch_deleted += 1
+                        except Exception as exc:
+                            logger.warning("Failed to delete user %s from PasarGuard: %s", uname, exc)
+                if batch_deleted == 0:
+                    break
+            except Exception as exc:
+                logger.error("Failed to fetch users from PasarGuard for deletion: %s", exc)
+                break
+        return deleted
+
     async def reset_usage(self, username: str) -> dict:
         return await self._request("POST", f"/api/user/{username}/reset")
 

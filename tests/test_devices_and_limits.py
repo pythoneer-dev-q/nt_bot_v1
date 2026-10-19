@@ -25,12 +25,13 @@ class TestDeviceLimitsAndRevocation(unittest.IsolatedAsyncioTestCase):
         await db.set_user_tariff(self.user_id, "free", None)
 
         free_limit = await db.get_user_device_limit(self.user_id)
-        self.assertEqual(free_limit, settings.free_device_limit)
+        cfg = await db.get_app_config()
+        self.assertEqual(free_limit, cfg["free_device_limit"])
 
         # Switch to premium
         await db.set_user_tariff(self.user_id, "premium", None)
         prem_limit = await db.get_user_device_limit(self.user_id)
-        self.assertEqual(prem_limit, settings.premium_device_limit)
+        self.assertEqual(prem_limit, cfg["premium_device_limit"])
 
         # Set custom device limit (e.g. 5)
         await db.set_user_custom_device_limit(self.user_id, 5)
@@ -40,7 +41,7 @@ class TestDeviceLimitsAndRevocation(unittest.IsolatedAsyncioTestCase):
         # Reset custom device limit to None
         await db.set_user_custom_device_limit(self.user_id, None)
         reverted_limit = await db.get_user_device_limit(self.user_id)
-        self.assertEqual(reverted_limit, settings.premium_device_limit)
+        self.assertEqual(reverted_limit, cfg["premium_device_limit"])
 
     async def test_should_warn_device_limit(self):
         await db.ensure_user(self.user_id, "test_warn_user", "Test Warn User")
@@ -69,7 +70,6 @@ class TestDeviceLimitsAndRevocation(unittest.IsolatedAsyncioTestCase):
         empty_kb = await kbs.devices_keyboard([], device_limit=2)
         cbs_empty = [b.callback_data for row in empty_kb.inline_keyboard for b in row if b.callback_data]
         self.assertIn("user:sub_settings", cbs_empty)
-        self.assertIn("user:menu", cbs_empty)
         self.assertNotIn("user:profile", cbs_empty)
         self.assertNotIn("user:dev_reset_all", cbs_empty)
 

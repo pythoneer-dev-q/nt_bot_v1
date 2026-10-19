@@ -183,41 +183,37 @@ async def subscription_keyboard(
     auto_renew: bool = True,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    url = f'{settings.marzban_url}{url.replace('/', '', 1)}'
     if url:
         builder.row(InlineKeyboardButton(text="🚀 Открыть подписку", url=url, style="primary"))
-    if show_free_renew:
-        builder.row(InlineKeyboardButton(text="🔄 Продлить бесплатно", callback_data="user:renew_free", style="success"))
-    if settings.help_url:
-        builder.row(InlineKeyboardButton(text="🛠 Инструкция", url=settings.help_url, style="success"))
-    builder.row(InlineKeyboardButton(text="🗯 Инструкция в боте", callback_data="user:instruction"))
-    builder.row(InlineKeyboardButton(text="↖️ Назад", callback_data="user:menu"))
-    await _append_ad_row(builder)
+    
+    builder.row(InlineKeyboardButton(text="⚙️ Настройки подписки", callback_data="user:sub_settings"))
+    if is_premium:
+        renew_icon = "ВКЛ" if auto_renew else "ВЫКЛ"
+        builder.row(InlineKeyboardButton(text=f"🔄 Автопродление: [{renew_icon}]", callback_data="user:toggle_autorenew"))
+        builder.row(InlineKeyboardButton(text="➕ Продлить Премиум", callback_data="user:tariffs", style="success"))
+    else:
+        if show_free_renew:
+            builder.row(InlineKeyboardButton(text="🔄 Продлить бесплатно", callback_data="user:renew_free", style="success"))
+        builder.row(InlineKeyboardButton(text="💎 Перейти на Премиум (LTE)", callback_data="user:tariffs", style="primary"))
+
+    builder.row(InlineKeyboardButton(text="« Главное меню", callback_data="user:menu"))
     return builder.as_markup()
 
 
-async def devices_keyboard(devices: Sequence[dict], back_to: str = "user:sub") -> InlineKeyboardMarkup:
+async def sub_settings_keyboard(
+    is_premium: bool = False,
+    auto_renew: bool = True,
+    devices_count: int = 0,
+    device_limit: int = 1,
+) -> InlineKeyboardMarkup:
+    """Клавиатура настроек подписки: управление устройствами, сброс ссылки, автопродление."""
     builder = InlineKeyboardBuilder()
-    for index, device in enumerate(devices[:8]):
-        label = device.get("device_model") or device.get("device_os") or device.get("hwid") or f"#{index + 1}"
-        builder.row(
-            InlineKeyboardButton(
-                text=f"🗑 {str(label)[:32]}",
-                callback_data=f"user:device_del:{index}",
-                style="danger",
-            )
-        )
-    if devices:
-        builder.row(InlineKeyboardButton(text="🧹 Сбросить все устройства", callback_data="user:devices_reset", style="danger"))
-    builder.row(InlineKeyboardButton(text="♻️ Обновить", callback_data="user:devices"))
-    builder.row(InlineKeyboardButton(text="↖️ К подписке", callback_data=back_to))
-    return builder.as_markup()
-
-
-async def revoke_subscription_confirm_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔐 Сбросить ссылку", callback_data="user:revoke_sub_confirm", style="danger"))
-    builder.row(InlineKeyboardButton(text="↖️ К подписке", callback_data="user:sub"))
+    builder.row(InlineKeyboardButton(text=f"📱 Мои устройства ({devices_count}/{device_limit})", callback_data="user:devices"))
+    builder.row(InlineKeyboardButton(text="🔄 Сбросить ссылку подписки", callback_data="user:reset_sub"))
+    if is_premium:
+        renew_icon = "ВКЛ" if auto_renew else "ВЫКЛ"
+        builder.row(InlineKeyboardButton(text=f"🔄 Автопродление: [{renew_icon}]", callback_data="user:toggle_autorenew"))
+    builder.row(InlineKeyboardButton(text="« Назад к подключению", callback_data="user:connect"))
     return builder.as_markup()
 
 
@@ -486,7 +482,12 @@ async def support_confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 # ---------------- Admin Keyboards ----------------
-async def admin_panel() -> InlineKeyboardMarkup:
+async def admin_panel(maintenance_mode: bool | None = None) -> InlineKeyboardMarkup:
+    if maintenance_mode is None:
+        try:
+            maintenance_mode = await db.is_maintenance_mode()
+        except Exception:
+            maintenance_mode = False
     builder = InlineKeyboardBuilder()
     builder.button(text="💰 Тарифы и цены", callback_data="admin:pricing", style="success")
     builder.button(text="📱 Лимиты устройств", callback_data="admin:device_limits", style="primary")
@@ -498,9 +499,11 @@ async def admin_panel() -> InlineKeyboardMarkup:
     builder.button(text="🔄 Запросы отмен", callback_data="admin:refund_requests", style="primary")
     builder.button(text="➕ Добавить админа", callback_data="admin:add_admin")
     builder.button(text="👥 Список админов", callback_data="admin:list_admins")
+    m_icon = "🔴 ВКЛ" if maintenance_mode else "⚪️ ВЫКЛ"
+    builder.button(text=f"🛠 Техработы: [{m_icon}]", callback_data="admin:toggle_maintenance", style="danger" if maintenance_mode else None)
     builder.button(text="⚠️ Rescue", callback_data="admin:rescue", style="danger")
     builder.button(text="« Меню пользователя", callback_data="user:menu", style="success")
-    builder.adjust(2, 2, 2, 2, 2, 2)
+    builder.adjust(2, 2, 2, 2, 2, 2, 1)
     return builder.as_markup()
 
 
@@ -537,9 +540,9 @@ async def admin_user_actions(user_id: int, is_premium: bool = False) -> InlineKe
     builder.button(text="✅ Активировать", callback_data=f"admin_user:activate:{user_id}", style="primary")
     builder.button(text="❌ Отключить", callback_data=f"admin_user:disable:{user_id}", style="danger")
     builder.button(text="🔄 Сбросить трафик", callback_data=f"admin_user:reset:{user_id}")
-    builder.button(text="♻️ Обновить", callback_data=f"admin_user:refresh:{user_id}")
-    builder.button(text="⬅️ Назад", callback_data="admin:panel")
-    builder.adjust(2, 2, 2, 1)
+    builder.button(text="🔄 Обновить", callback_data=f"admin_user:refresh:{user_id}")
+    builder.button(text="« Назад", callback_data="admin:panel")
+    builder.adjust(1, 1, 2, 2, 2, 2, 2, 1)
     return builder.as_markup()
 
 
@@ -551,7 +554,21 @@ async def admin_rescue_panel() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="Create backup now", callback_data="admin:backup_now", style="success"))
     builder.row(InlineKeyboardButton(text="Export for migration", callback_data="admin:export_migration", style="primary"))
     builder.row(InlineKeyboardButton(text="Repair expired subscriptions", callback_data="admin:subscription_maintenance"))
+    builder.row(InlineKeyboardButton(text="🗑 Удалить всех пользователей", callback_data="admin:delete_all_users_prompt", style="danger"))
     builder.row(InlineKeyboardButton(text="Back", callback_data="admin:panel"))
+    return builder.as_markup()
+
+
+async def admin_delete_all_users_confirm_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="⚠️ ДА, УДАЛИТЬ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ",
+            callback_data="admin:delete_all_users_confirm",
+            style="danger",
+        )
+    )
+    builder.row(InlineKeyboardButton(text="« Отмена", callback_data="admin:rescue"))
     return builder.as_markup()
 
 

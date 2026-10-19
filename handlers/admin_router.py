@@ -288,6 +288,21 @@ async def admin_panel_page(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
+@router.callback_query(F.data == "admin:toggle_maintenance")
+async def admin_toggle_maintenance(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    current = await db.is_maintenance_mode()
+    new_state = not current
+    await db.set_maintenance_mode(new_state)
+    alert_text = (
+        "🛠 Режим техработ ВКЛЮЧЕН.\nБот не отвечает обычным пользователям."
+        if new_state
+        else "✅ Режим техработ ВЫКЛЮЧЕН.\nБот снова отвечает всем пользователям."
+    )
+    await call.answer(alert_text, show_alert=True)
+    await call.message.edit_text("◈ Админ-панель", reply_markup=await kbs.admin_panel(maintenance_mode=new_state))
+
+
 # ---------------- Pricing & Discount Management ----------------
 @router.callback_query(F.data == "admin:pricing")
 async def admin_pricing_page(call: CallbackQuery, state: FSMContext) -> None:
@@ -635,6 +650,55 @@ async def clear_subscription_alert(call: CallbackQuery) -> None:
     await db.clear_subscription_alert()
     await call.message.edit_text("Subscription alert disabled.", reply_markup=await kbs.admin_rescue_panel())
     await call.answer("Disabled")
+
+
+# ---------------- Mass User Deletion ----------------
+@router.callback_query(F.data == "admin:delete_all_users_prompt")
+async def admin_delete_all_users_prompt(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    bot_users_count = await db.count_all_users()
+    warning_text = (
+        "⚠️ <b>ВНИМАНИЕ! ОПАСНАЯ ОПЕРАЦИЯ</b> ⚠️\n\n"
+        f"Вы собираетесь удалить <b>ВСЕХ ПОЛЬЗОВАТЕЛЕЙ</b>:\n"
+        f"• В базе данных бота (сейчас: <code>{bot_users_count}</code> польз.)\n"
+        "• В панели PasarGuard / Marzban (все клиенты)\n\n"
+        "<i>Администраторы бота будут сохранены, чтобы не потерять доступ к управлению.</i>\n\n"
+        "Это действие <b>НЕОБРАТИМО</b>! Все подписки, ключи и данные пользователей будут стёрты.\n\n"
+        "Вы уверены, что хотите продолжить?"
+    )
+    await call.message.edit_text(warning_text, reply_markup=await kbs.admin_delete_all_users_confirm_keyboard())
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:delete_all_users_confirm")
+async def admin_delete_all_users_confirm(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await call.message.edit_text("⏳ Выполняется удаление всех пользователей из панели и базы бота...")
+
+    panel_deleted = 0
+    try:
+        panel_deleted = await manager.delete_all_panel_users()
+    except Exception as exc:
+        logger.error("Failed to delete all users from panel: %s", exc)
+
+    bot_deleted = 0
+    try:
+        bot_deleted = await db.delete_all_users(keep_admins=True)
+    except Exception as exc:
+        logger.error("Failed to delete all users from bot DB: %s", exc)
+
+    result_text = (
+        "🗑 <b>Удаление пользователей завершено</b>\n\n"
+        f"• Удалено из панели PasarGuard: <b>{panel_deleted}</b>\n"
+        f"• Удалено из базы бота (MongoDB): <b>{bot_deleted}</b>\n"
+        "• Администраторы: <b>Сохранены</b>\n\n"
+        "Все пользователи успешно очищены."
+    )
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="« В Rescue панель", callback_data="admin:rescue"))
+    builder.row(InlineKeyboardButton(text="« В админ-панель", callback_data="admin:panel"))
+    await call.message.edit_text(result_text, reply_markup=builder.as_markup())
+    await call.answer("Все пользователи удалены!", show_alert=True)
 
 
 # ---------------- User Lookup & Actions ----------------

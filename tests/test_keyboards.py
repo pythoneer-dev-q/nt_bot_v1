@@ -81,10 +81,13 @@ class TestKeyboards(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pay:select:3m", all_callbacks)
         self.assertIn("pay:select:6m", all_callbacks)
         self.assertIn("pay:select:12m", all_callbacks)
-        self.assertIn("user:overdraft", all_callbacks)
-        self.assertIn("user:topup", all_callbacks)
-        self.assertIn("user:connect", all_callbacks)
         self.assertIn("user:menu", all_callbacks)
+
+        prof_kb = await kbs.profile_keyboard(can_overdraft=True)
+        prof_cbs = [b.callback_data for row in prof_kb.inline_keyboard for b in row if b.callback_data]
+        self.assertIn("user:overdraft", prof_cbs)
+        self.assertIn("user:topup", prof_cbs)
+        self.assertIn("user:history", prof_cbs)
 
 
 if __name__ == "__main__":

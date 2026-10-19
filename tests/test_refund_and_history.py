@@ -211,7 +211,6 @@ class TestRefundAndHistory(unittest.IsolatedAsyncioTestCase):
         self.assertIn("user:history:2", cbs_p1)
         self.assertIn("📄 1/3", texts_p1)
         self.assertIn("user:profile", cbs_p1)
-        self.assertIn("user:menu", cbs_p1)
 
         # Test keyboard pagination controls: page 2 of 3
         kb_page2 = await kbs.payment_history_keyboard(page2, page=2, total_pages=3)

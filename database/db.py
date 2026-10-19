@@ -147,6 +147,7 @@ class MongoStorage:
             "premium_device_limit": settings.premium_device_limit,
             "project_name": settings.project_name,
             "menu_description": settings.menu_description,
+            "maintenance_mode": False,
         }
         if not doc:
             return defaults
@@ -159,6 +160,7 @@ class MongoStorage:
             "premium_device_limit": int(doc.get("premium_device_limit", settings.premium_device_limit)),
             "project_name": str(doc.get("project_name", settings.project_name)),
             "menu_description": str(doc.get("menu_description", settings.menu_description)),
+            "maintenance_mode": bool(doc.get("maintenance_mode", False)),
         }
 
     async def update_app_config(self, **kwargs) -> dict:
@@ -171,6 +173,27 @@ class MongoStorage:
             upsert=True,
         )
         return await self.get_app_config()
+
+    async def is_maintenance_mode(self) -> bool:
+        """Проверяет, включен ли режим технических работ."""
+        cfg = await self.get_app_config()
+        return bool(cfg.get("maintenance_mode", False))
+
+    async def set_maintenance_mode(self, enabled: bool) -> bool:
+        """Устанавливает статус режима технических работ."""
+        await self.update_app_config(maintenance_mode=bool(enabled))
+        return bool(enabled)
+
+    async def delete_all_users(self, keep_admins: bool = True) -> int:
+        """Удаляет всех пользователей из базы бота (по умолчанию сохраняя админов)."""
+        assert self.users is not None
+        query: dict = {}
+        if keep_admins:
+            admin_ids = await self.list_support_recipient_ids()
+            if admin_ids:
+                query = {"user_id": {"$nin": admin_ids}}
+        res = await self.users.delete_many(query)
+        return int(res.deleted_count)
 
     # ---------------- Payments ----------------
     async def create_payment_order(
