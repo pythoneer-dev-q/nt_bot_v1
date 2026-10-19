@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import random
+from html import escape
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from aiogram import F, Router
@@ -89,6 +90,7 @@ def _normalize_dt(dt: datetime | None) -> datetime | None:
 
 
 def _renewal_state(user_info: dict, local_user: dict | None) -> dict[str, object]:
+    # Здесь собрана вся анти-фарм логика бесплатного продления.
     expire_ts = _safe_int_ts(user_info.get("expire"))
     if not expire_ts:
         return {"show_button": False, "can_renew": False, "reason": "У этой подписки нет срока окончания."}

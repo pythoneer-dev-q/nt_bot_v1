@@ -128,6 +128,7 @@ class Settings:
     debug: bool
     log_level: str
     disable_logs: bool
+    default_groups: list[int]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -194,6 +195,7 @@ class Settings:
             debug=_parse_bool(os.getenv("DEBUG"), False),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             disable_logs=_parse_bool(os.getenv("DISABLE_LOGS"), False),
+            default_groups=[int(x) for x in _parse_csv(os.getenv("DEFAULT_GROUPS", "1,4")) if x.strip().isdigit()],
         )
 
 

@@ -111,7 +111,6 @@ class SubscriptionMaintenanceService:
                             except Exception:
                                 pass
                         await db.set_user_warned_expire(user_id, expire_ts)
-
                 if expire_ts and expire_ts <= now_ts and vpn_user.get("status") != "expired":
                     # Проверяем возможность автопродления
                     auto_renew = await db.get_user_auto_renew(user_id)

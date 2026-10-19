@@ -183,37 +183,41 @@ async def subscription_keyboard(
     auto_renew: bool = True,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    url = f'{settings.marzban_url}{url.replace('/', '', 1)}'
     if url:
         builder.row(InlineKeyboardButton(text="🚀 Открыть подписку", url=url, style="primary"))
-    
-    builder.row(InlineKeyboardButton(text="⚙️ Настройки подписки", callback_data="user:sub_settings"))
-    if is_premium:
-        renew_icon = "ВКЛ" if auto_renew else "ВЫКЛ"
-        builder.row(InlineKeyboardButton(text=f"🔄 Автопродление: [{renew_icon}]", callback_data="user:toggle_autorenew"))
-        builder.row(InlineKeyboardButton(text="➕ Продлить Премиум", callback_data="user:tariffs", style="success"))
-    else:
-        if show_free_renew:
-            builder.row(InlineKeyboardButton(text="🔄 Продлить бесплатно", callback_data="user:renew_free", style="success"))
-        builder.row(InlineKeyboardButton(text="💎 Перейти на Премиум (LTE)", callback_data="user:tariffs", style="primary"))
-
-    builder.row(InlineKeyboardButton(text="« Главное меню", callback_data="user:menu"))
+    if show_free_renew:
+        builder.row(InlineKeyboardButton(text="🔄 Продлить бесплатно", callback_data="user:renew_free", style="success"))
+    if settings.help_url:
+        builder.row(InlineKeyboardButton(text="🛠 Инструкция", url=settings.help_url, style="success"))
+    builder.row(InlineKeyboardButton(text="🗯 Инструкция в боте", callback_data="user:instruction"))
+    builder.row(InlineKeyboardButton(text="↖️ Назад", callback_data="user:menu"))
+    await _append_ad_row(builder)
     return builder.as_markup()
 
 
-async def sub_settings_keyboard(
-    is_premium: bool = False,
-    auto_renew: bool = True,
-    devices_count: int = 0,
-    device_limit: int = 1,
-) -> InlineKeyboardMarkup:
-    """Клавиатура настроек подписки: управление устройствами, сброс ссылки, автопродление."""
+async def devices_keyboard(devices: Sequence[dict], back_to: str = "user:sub") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text=f"📱 Мои устройства ({devices_count}/{device_limit})", callback_data="user:devices"))
-    builder.row(InlineKeyboardButton(text="🔄 Сбросить ссылку подписки", callback_data="user:reset_sub"))
-    if is_premium:
-        renew_icon = "ВКЛ" if auto_renew else "ВЫКЛ"
-        builder.row(InlineKeyboardButton(text=f"🔄 Автопродление: [{renew_icon}]", callback_data="user:toggle_autorenew"))
-    builder.row(InlineKeyboardButton(text="« Назад к подключению", callback_data="user:connect"))
+    for index, device in enumerate(devices[:8]):
+        label = device.get("device_model") or device.get("device_os") or device.get("hwid") or f"#{index + 1}"
+        builder.row(
+            InlineKeyboardButton(
+                text=f"🗑 {str(label)[:32]}",
+                callback_data=f"user:device_del:{index}",
+                style="danger",
+            )
+        )
+    if devices:
+        builder.row(InlineKeyboardButton(text="🧹 Сбросить все устройства", callback_data="user:devices_reset", style="danger"))
+    builder.row(InlineKeyboardButton(text="♻️ Обновить", callback_data="user:devices"))
+    builder.row(InlineKeyboardButton(text="↖️ К подписке", callback_data=back_to))
+    return builder.as_markup()
+
+
+async def revoke_subscription_confirm_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔐 Сбросить ссылку", callback_data="user:revoke_sub_confirm", style="danger"))
+    builder.row(InlineKeyboardButton(text="↖️ К подписке", callback_data="user:sub"))
     return builder.as_markup()
 
 
@@ -533,9 +537,9 @@ async def admin_user_actions(user_id: int, is_premium: bool = False) -> InlineKe
     builder.button(text="✅ Активировать", callback_data=f"admin_user:activate:{user_id}", style="primary")
     builder.button(text="❌ Отключить", callback_data=f"admin_user:disable:{user_id}", style="danger")
     builder.button(text="🔄 Сбросить трафик", callback_data=f"admin_user:reset:{user_id}")
-    builder.button(text="🔄 Обновить", callback_data=f"admin_user:refresh:{user_id}")
-    builder.button(text="« Назад", callback_data="admin:panel")
-    builder.adjust(1, 1, 2, 2, 2, 2, 2, 1)
+    builder.button(text="♻️ Обновить", callback_data=f"admin_user:refresh:{user_id}")
+    builder.button(text="⬅️ Назад", callback_data="admin:panel")
+    builder.adjust(2, 2, 2, 1)
     return builder.as_markup()
 
 

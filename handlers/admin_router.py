@@ -92,6 +92,15 @@ def _format_dt(value: datetime | None) -> str:
     return value.strftime("%d.%m.%Y %H:%M")
 
 
+def _format_api_dt(value: str | None) -> str:
+    if not value:
+        return "n/a"
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        return value
+
+
 def _broadcast_buttons_text(buttons: list[dict[str, str]]) -> str:
     if not buttons:
         return "Кнопки: не добавлены"
@@ -198,6 +207,33 @@ async def _user_card(user_id: int) -> str:
         lines.append(f"Премиум до: {_format_dt(user['premium_expires_at'])}")
     if user.get("blocked_reason"):
         lines.append(f"Причина блокировки: {user['blocked_reason']}")
+    return "\n".join(lines)
+
+
+async def _admin_user_devices_text(user_id: int, vpn_user: dict, devices: list[dict]) -> str:
+    lines = [
+        "<b>📱 Устройства пользователя</b>",
+        "",
+        f"Telegram ID: <code>{user_id}</code>",
+        f"VPN username: <code>{vpn_user.get('username', db.build_vpn_username(user_id))}</code>",
+        f"Лимит: <code>{vpn_user.get('hwid_limit') if vpn_user.get('hwid_limit') is not None else 'без лимита'}</code>",
+        f"Подключено: <code>{len(devices)}</code>",
+    ]
+    if not devices:
+        lines.append("\nУстройства пока не привязаны.")
+        return "\n".join(lines)
+
+    for index, device in enumerate(devices, start=1):
+        title = device.get("device_model") or device.get("device_os") or "Unknown device"
+        lines.extend(
+            [
+                "",
+                f"<b>{index}. {escape(str(title))}</b>",
+                f"OS: <code>{escape(str(device.get('device_os') or 'n/a'))}</code>",
+                f"HWID: <code>{escape(str(device.get('hwid') or 'n/a'))}</code>",
+                f"Last used: <code>{escape(_format_api_dt(device.get('last_used_at')))}</code>",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -626,8 +662,9 @@ async def admin_user_lookup_process(message: Message, state: FSMContext) -> None
 
 
 @router.callback_query(F.data.startswith("admin_user:"))
-async def admin_user_actions_handler(call: CallbackQuery, state: FSMContext) -> None:
-    _, action, raw_user_id = call.data.split(":")
+async def admin_user_actions(call: CallbackQuery, state: FSMContext) -> None:
+    parts = call.data.split(":")
+    _, action, raw_user_id = parts[:3]
     user_id = int(raw_user_id)
     username = db.build_vpn_username(user_id)
 
@@ -681,7 +718,7 @@ async def admin_user_actions_handler(call: CallbackQuery, state: FSMContext) -> 
             await db.update_user_status(user_id, "active")
             await call.answer("Подписка продлена на 90 дней")
         elif action == "activate":
-            await manager.set_user_status(username, UserStatus.ACTIVE)
+            await manager.set_user_disabled(username, False)
             await db.update_user_status(user_id, "active")
             await call.answer("Активирован")
         elif action == "disable":
@@ -697,9 +734,16 @@ async def admin_user_actions_handler(call: CallbackQuery, state: FSMContext) -> 
         elif action == "reset":
             await manager.reset_usage(username)
             await call.answer("Трафик сброшен")
+        elif action == "active_next":
+            await manager.activate_next_plan(username)
+            await db.update_user_status(user_id, "active")
+            await call.answer("План активирован")
         elif action != "refresh":
             await call.answer("Неизвестное действие", show_alert=True)
             return
+    except (ValueError, KeyError):
+        await call.answer("Не удалось обработать действие", show_alert=True)
+        return
     except MarzbanError as exc:
         await call.answer(f"Ошибка PasarGuard: {exc.detail}", show_alert=True)
         return

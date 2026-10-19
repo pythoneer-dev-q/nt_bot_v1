@@ -166,6 +166,35 @@ class PasarGuardManager:
             return group_id
         return None
 
+    async def _request_with_fallback(self, method: str, endpoints: list[str], **kwargs) -> Any:
+        last_error: MarzbanError | None = None
+        for endpoint in endpoints:
+            try:
+                return await self._request(method, endpoint, **kwargs)
+            except MarzbanError as exc:
+                last_error = exc
+                if exc.status_code not in {404, 405}:
+                    raise
+        if last_error:
+            raise last_error
+        raise MarzbanError(500, "No API endpoints configured")
+
+    @staticmethod
+    def _normalize_expire(value: int | str | None) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            if value.isdigit():
+                return int(value)
+            normalized = value.replace("Z", "+00:00")
+            try:
+                return int(datetime.fromisoformat(normalized).timestamp())
+            except ValueError:
+                return 0
+        return 0
+
     # ---------------- User Management ----------------
     async def create_user(
         self,
@@ -189,18 +218,20 @@ class PasarGuardManager:
 
         payload: dict[str, Any] = {
             "username": username,
-            "proxies": proxies or {"vless": {}},
-            "inbounds": inbounds or {},
+            "proxy_settings": proxies or {"vless": {}},
             "expire": expire_ts,
             "data_limit": data_limit,
             "data_limit_reset_strategy": reset_strategy.value,
             "note": note,
             "status": status.value,
+            "group_ids": settings.default_groups
         }
         if group_ids is not None:
             payload["group_ids"] = group_ids
         if hwid_limit is not None:
             payload["hwid_limit"] = hwid_limit
+        if inbounds:
+            payload["inbounds"] = inbounds
 
         res = await self._request("POST", "/api/user", json=payload)
         return normalize_vpn_user(res) if isinstance(res, dict) else res
@@ -218,6 +249,8 @@ class PasarGuardManager:
             raise
 
     async def modify_user(self, username: str, **kwargs) -> dict:
+        if "proxies" in kwargs:
+            kwargs["proxy_settings"] = kwargs.pop("proxies")
         res = await self._request("PUT", f"/api/user/{username}", json=kwargs)
         return normalize_vpn_user(res) if isinstance(res, dict) else res
 
@@ -226,6 +259,40 @@ class PasarGuardManager:
 
     async def reset_usage(self, username: str) -> dict:
         return await self._request("POST", f"/api/user/{username}/reset")
+
+    async def revoke_subscription(self, username: str) -> dict:
+        return await self._request("POST", f"/api/user/{username}/revoke_sub")
+
+    async def activate_next_plan(self, username: str) -> dict:
+        return await self._request("POST", f"/api/user/{username}/active_next")
+
+    async def set_user_disabled(self, username: str, disabled: bool) -> dict:
+        return await self._request("PUT", f"/api/user/{username}/disabled", json={"disabled": disabled})
+
+    async def get_user_hwids(self, user_id: int) -> list[dict]:
+        data = await self._request("GET", f"/api/user/{user_id}/hwids")
+        if isinstance(data, list):
+            return data
+        return data.get("hwids", [])
+
+    async def delete_user_hwid(self, user_id: int, hwid: str) -> dict:
+        return await self._request("DELETE", f"/api/user/{user_id}/hwids/{hwid}")
+
+    async def reset_user_hwids(self, user_id: int) -> dict:
+        return await self._request("POST", f"/api/user/{user_id}/hwids/reset")
+
+    async def get_user_subscription_updates(self, username: str, offset: int = 0, limit: int = 10) -> list[dict]:
+        data = await self._request(
+            "GET",
+            f"/api/user/{username}/sub_update",
+            params={"offset": offset, "limit": limit},
+        )
+        if isinstance(data, list):
+            return data
+        return data.get("updates", [])
+
+    async def get_user_usage(self, username: str, period: str = "day") -> dict:
+        return await self._request("GET", f"/api/user/{username}/usage", params={"period": period})
 
     async def get_all_users(self, offset: int = 0, limit: int = 100, search: str | None = None) -> list[dict]:
         params = {"offset": offset, "limit": limit}
@@ -238,22 +305,14 @@ class PasarGuardManager:
         return users
 
     async def get_templates(self) -> list[dict]:
-        return await self._request("GET", "/api/user_template")
+        data = await self._request_with_fallback("GET", ["/api/user_templates", "/api/user_template"])
+        if isinstance(data, list):
+            return data
+        return data.get("templates", [])
 
     async def create_user_from_template(self, username: str, template_id: int) -> dict:
-        template = await self._request("GET", f"/api/user_template/{template_id}")
-        expire_ts = 0
-        if template.get("expire_duration"):
-            expire_ts = int(datetime.now(timezone.utc).timestamp() + template["expire_duration"])
-
-        payload = {
-            "username": username,
-            "data_limit": template.get("data_limit", 0),
-            "expire": expire_ts,
-            "inbounds": template.get("inbounds", {}),
-            "proxies": template.get("proxies") or {"vless": {}},
-        }
-        return await self._request("POST", "/api/user", json=payload)
+        payload = {"username": username, "user_template_id": template_id}
+        return await self._request("POST", "/api/user/from_template", json=payload)
 
     async def get_system_stats(self) -> dict:
         return await self._request("GET", "/api/system")
@@ -461,7 +520,7 @@ class PasarGuardManager:
 
     async def extend_user_subscription(self, username: str, days: int, reset_usage: bool = True) -> dict:
         user = await self.get_user(username)
-        current_expire = user.get("expire") or int(datetime.now(timezone.utc).timestamp())
+        current_expire = self._normalize_expire(user.get("expire")) or int(datetime.now(timezone.utc).timestamp())
         now_ts = int(datetime.now(timezone.utc).timestamp())
         base_ts = max(current_expire, now_ts)
         new_expire = base_ts + (days * 86400)
@@ -480,7 +539,7 @@ class PasarGuardManager:
             "note": settings.expired_subscription_note,
         }
         if settings.expired_subscription_proxies:
-            payload["proxies"] = settings.expired_subscription_proxies
+            payload["proxy_settings"] = settings.expired_subscription_proxies
         if settings.expired_subscription_inbounds:
             payload["inbounds"] = settings.expired_subscription_inbounds
         return await self.modify_user(username, **payload)
